@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react';
 import { useGameStore } from '@/store/gameStore';
-import { GameScreen, TacticType, TACTIC_CONFIG } from '@/types/game';
+import { GameScreen, TacticType, TACTIC_CONFIG, type Cargo, type Client } from '@/types/game';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   ArrowLeft, MessageCircle, CheckCircle2, XCircle,
@@ -10,13 +10,14 @@ import {
   previewClientAcceptance, evaluateClientQuote,
   getAcceptanceColor, type ClientNegotiationPreview,
 } from '@/engine/negotiation';
+import { sfxSuccess, sfxFail, sfxClick } from '@/lib/sfx';
 import { CLIENT_DIALOGUES } from '@/types/game';
 
 export default function ClientQuoteScreen() {
   const {
     setScreen, selectedCargoId, activeCargos, availableClients,
     tactics, level, fame, demandMultiplier,
-    useTactic, submitQuote, resolveQuote, addFame,
+    useTactic, submitQuote, resolveQuote, addFame, adjustClientRelationship,
   } = useGameStore();
 
   const [price, setPrice] = useState<string>('');
@@ -28,8 +29,13 @@ export default function ClientQuoteScreen() {
     CLIENT_DIALOGUES.initial[Math.floor(Math.random() * CLIENT_DIALOGUES.initial.length)]
   );
 
-  const cargo = activeCargos.find(c => c.id === selectedCargoId);
-  const client = availableClients.find(c => c.id === cargo?.clientId);
+  // Si el rechazo elimina la carga del store, esta copia congelada mantiene la pantalla
+  // de resultado renderizable (antes quedaba "No hay carga o cliente" sin explicación).
+  const [frozen, setFrozen] = useState<{ cargo: Cargo; client: Client } | null>(null);
+  const liveCargo = activeCargos.find(c => c.id === selectedCargoId);
+  const liveClient = availableClients.find(c => c.id === liveCargo?.clientId);
+  const cargo = liveCargo ?? frozen?.cargo;
+  const client = liveClient ?? frozen?.client;
 
   const preview: ClientNegotiationPreview | null = useMemo(() => {
     if (!cargo || !client || !price || parseInt(price) <= 0) return null;
@@ -53,6 +59,7 @@ export default function ClientQuoteScreen() {
     if (!cargo || !client || !price) return;
     const offeredPrice = parseInt(price);
     if (offeredPrice <= 0) return;
+    setFrozen({ cargo, client });   // preserva el render del resultado si la carga se elimina
 
     submitQuote(cargo.id, offeredPrice, paymentTerm);
 
@@ -63,17 +70,21 @@ export default function ClientQuoteScreen() {
     );
 
     if (evaluation.accepted) {
+      sfxSuccess();
       resolveQuote(cargo.id, true, null);
       setClientMessage(evaluation.message);
       setResult({ accepted: true, message: evaluation.message, counterOffer: null, makesAngry: false });
     } else if (evaluation.counterOffer) {
+      sfxClick();
       setPrice(evaluation.counterOffer.toString());
       setClientMessage(evaluation.message);
       setResult({ accepted: false, message: evaluation.message, counterOffer: evaluation.counterOffer, makesAngry: false });
     } else {
+      sfxFail();
       resolveQuote(cargo.id, false, null);
       if (evaluation.makesAngry) {
         addFame(-10);
+        adjustClientRelationship(cargo.clientId, -10);   // el cliente ofendido se acuerda de vos
       }
       setClientMessage(evaluation.message);
       setResult({ accepted: false, message: evaluation.message, counterOffer: null, makesAngry: evaluation.makesAngry });
@@ -82,6 +93,7 @@ export default function ClientQuoteScreen() {
 
   const handleAcceptCounter = () => {
     if (!cargo || !client || !result?.counterOffer) return;
+    sfxSuccess();
     submitQuote(cargo.id, result.counterOffer, paymentTerm);
     resolveQuote(cargo.id, true, null);
     setResult({ accepted: true, message: 'Aceptamos tu contraoferta. ¡Trato hecho! 🤝', counterOffer: null, makesAngry: false });
@@ -94,8 +106,14 @@ export default function ClientQuoteScreen() {
 
   if (!cargo || !client) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
+      <div className="min-h-screen flex flex-col items-center justify-center gap-4">
         <p className="text-slate-500">No hay carga o cliente</p>
+        <button
+          onClick={handleBack}
+          className="px-4 py-2 bg-slate-800 hover:bg-slate-700 rounded-lg text-sm text-slate-300"
+        >
+          ← Volver al escritorio
+        </button>
       </div>
     );
   }

@@ -1,22 +1,51 @@
 import { useGameStore } from '@/store/gameStore';
-import { GameScreen, CargoStatus } from '@/types/game';
-import { getRandomEvent } from '@/data/events';
+import { GameScreen, CargoStatus, type Notice } from '@/types/game';
+import { TRANSIT_EVENTS } from '@/data/events';
+import { sfxCoin, sfxAlert, sfxClick } from '@/lib/sfx';
 import { toast } from 'sonner';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   DollarSign, Star, TrendingUp, Package, Users,
   Ship, AlertTriangle, ChevronRight, Volume2, VolumeX,
-  Zap, BarChart3, Award
+  Zap, BarChart3, Award, FastForward, Hourglass
 } from 'lucide-react';
 import { useEffect } from 'react';
+
+// Muestra los avisos del tick de día como toasts (con sonido según el tipo).
+function showNotices(notices: Notice[]) {
+  for (const n of notices) {
+    const show = n.kind === 'good' ? toast.success : n.kind === 'bad' ? toast.warning : toast.info;
+    show(n.title, { description: n.desc });
+    if (n.title.startsWith('Cobraste')) sfxCoin();
+    else if (n.kind === 'bad') sfxAlert();
+  }
+}
 
 export default function MainScreen() {
   const {
     cash, fame, level, xp, day, targetCash,
-    activeCargos, stats, soundEnabled,
-    setScreen, generateNewCargo, selectCargo, advanceDay,
+    activeCargos, stats, soundEnabled, pendingPayments, pendingEvents,
+    setScreen, generateNewCargo, selectCargo, advanceDay, resolveEventOption,
     toggleSound,
   } = useGameStore();
+
+  const pendingEvent = pendingEvents[0] ?? null;
+  const eventData = pendingEvent ? TRANSIT_EVENTS.find(e => e.id === pendingEvent.eventId) : null;
+  const receivable = pendingPayments.reduce((sum, p) => sum + p.amount, 0);
+
+  // Suena la alarma cuando aparece un evento que exige decisión
+  useEffect(() => { if (pendingEvent) sfxAlert(); }, [pendingEvent?.eventId, pendingEvent?.cargoId]);
+
+  // Avanza hasta que pase algo (entrega, cobro, evento, meta) o 15 días como tope.
+  const fastForward = () => {
+    sfxClick();
+    for (let i = 0; i < 15; i++) {
+      const st = useGameStore.getState();
+      if (st.screen !== GameScreen.Main || st.pendingEvents.length > 0) break;
+      const notices = st.advanceDay();
+      if (notices.length > 0) { showNotices(notices); break; }
+    }
+  };
 
   // Auto-generate new cargo if none available for quoting
   useEffect(() => {
@@ -39,8 +68,13 @@ export default function MainScreen() {
         <div className="max-w-lg mx-auto flex items-center justify-between">
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-1.5">
-              <DollarSign className="w-4 h-4 text-green-400" />
-              <span className="font-bold text-green-400">₦{cash.toLocaleString()}</span>
+              <DollarSign className={`w-4 h-4 ${cash < 0 ? 'text-red-400' : 'text-green-400'}`} />
+              <span className={`font-bold ${cash < 0 ? 'text-red-400' : 'text-green-400'}`}>₦{cash.toLocaleString()}</span>
+              {receivable > 0 && (
+                <span className="text-[10px] text-cyan-400 bg-cyan-400/10 px-1.5 py-0.5 rounded-full">
+                  +₦{receivable.toLocaleString()} por cobrar
+                </span>
+              )}
             </div>
             <div className="flex items-center gap-1.5">
               <Star className="w-4 h-4 text-yellow-400" />
@@ -180,53 +214,19 @@ export default function MainScreen() {
       <div className="bg-slate-900/80 backdrop-blur-sm border-t border-slate-800 px-4 py-3">
         <div className="max-w-lg mx-auto flex gap-2">
           <button
-            onClick={() => {
-              advanceDay();
-              const st = useGameStore.getState();
-
-              // Eventos de tránsito: chance diaria por carga, escalada por la confiabilidad
-              // del agente elegido — el barato (45%) sufre el doble de problemas que el premium (97%).
-              st.activeCargos
-                .filter(c => c.status === CargoStatus.InTransit)
-                .forEach(c => {
-                  const agent = st.agents.find(a => a.id === c.agentId);
-                  const reliability = agent ? agent.reliability : 75;
-                  const chance = 0.05 * (1.5 - reliability / 100);
-                  if (Math.random() >= chance) return;
-
-                  const ev = getRandomEvent();
-                  const cost = Math.round(ev.cost / 2);   // costos a escala demo
-                  const isBad = ev.reputationImpact < 0;
-                  if (cost) st.addCash(-cost);
-                  if (ev.reputationImpact) st.addFame(Math.round(ev.reputationImpact / 3));
-                  if (ev.extraDays) st.extendTransit(c.id, ev.extraDays);
-                  if (isBad) st.updateStats({ problems: st.stats.problems + 1 });
-
-                  const detail = [
-                    ev.description,
-                    cost ? `−₦${cost}` : '',
-                    ev.extraDays ? `${ev.extraDays > 0 ? '+' : ''}${ev.extraDays} días` : '',
-                  ].filter(Boolean).join(' · ');
-                  toast[isBad ? 'warning' : 'success'](`${ev.name} — ${c.origin} → ${c.destination}`, {
-                    description: detail,
-                  });
-                });
-
-              // Process transit completions
-              const completed = useGameStore.getState().activeCargos.filter(
-                c => c.status === CargoStatus.InTransit && c.daysInTransit >= c.totalDays
-              );
-              completed.forEach(c => {
-                useGameStore.getState().resolveTransit(c.id);
-                toast.success(`Entregado — ${c.origin} → ${c.destination}`, {
-                  description: `+₦${Math.round(c.finalPrice * 0.1)} de bono por entrega · +8 fama`,
-                });
-              });
-            }}
+            onClick={() => { sfxClick(); showNotices(advanceDay()); }}
             className="flex-1 py-3 bg-slate-800 hover:bg-slate-700 rounded-xl font-medium text-sm transition-all hover:scale-[1.02] active:scale-[0.98] flex items-center justify-center gap-2"
           >
             <BarChart3 className="w-4 h-4" />
             Avanzar Día
+          </button>
+          <button
+            onClick={fastForward}
+            disabled={transitCargos.length === 0 && pendingPayments.length === 0}
+            title="Avanzar hasta que pase algo (máx. 15 días)"
+            className="px-4 py-3 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed rounded-xl font-medium text-sm transition-all hover:scale-[1.02] active:scale-[0.98]"
+          >
+            <FastForward className="w-4 h-4" />
           </button>
           <button
             onClick={() => {
@@ -241,6 +241,53 @@ export default function MainScreen() {
           </button>
         </div>
       </div>
+
+      {/* Modal de evento de tránsito: el jugador DECIDE cómo responder */}
+      <AnimatePresence>
+        {pendingEvent && eventData && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4"
+          >
+            <motion.div
+              initial={{ scale: 0.9, y: 20 }}
+              animate={{ scale: 1, y: 0 }}
+              className="w-full max-w-md bg-slate-900 border border-slate-700 rounded-2xl p-5"
+            >
+              <div className="flex items-center gap-2 mb-1">
+                <Hourglass className="w-5 h-5 text-amber-400" />
+                <span className="font-bold text-slate-100">{eventData.name}</span>
+                <span className="ml-auto text-xs text-slate-500">
+                  {'⚠️'.repeat(eventData.severity as number)}
+                </span>
+              </div>
+              <div className="text-xs text-slate-500 mb-3">{pendingEvent.route}</div>
+              <p className="text-sm text-slate-300 mb-4">{eventData.description}</p>
+              <div className="space-y-2">
+                {eventData.options.map((opt, i) => (
+                  <button
+                    key={i}
+                    onClick={() => {
+                      const notice = resolveEventOption(i);
+                      if (notice) showNotices([notice]);
+                    }}
+                    className="w-full text-left p-3 bg-slate-800 hover:bg-slate-700 border border-slate-700/60 hover:border-blue-500/50 rounded-xl transition-all"
+                  >
+                    <div className="text-sm font-medium text-slate-200">{opt.label}</div>
+                    <div className="text-xs text-slate-500 mt-0.5">
+                      {opt.cost !== 0 ? `Costo: ₦${Math.abs(opt.cost)} · ` : 'Gratis · '}
+                      éxito {(opt.successChance * 100).toFixed(0)}%
+                      {opt.reputationEffect !== 0 && ` · fama ${opt.reputationEffect > 0 ? '+' : ''}${opt.reputationEffect}`}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

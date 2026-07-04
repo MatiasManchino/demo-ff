@@ -12,6 +12,7 @@ import {
   type AgentNegotiationState,
 } from '@/engine/negotiation';
 import { AGENT_GREETINGS } from '@/types/game';
+import { sfxSuccess, sfxFail } from '@/lib/sfx';
 
 export default function AgentNegotiationScreen() {
   const { setScreen, selectedCargoId, activeCargos, agents, setAgentCost } = useGameStore();
@@ -69,10 +70,13 @@ export default function AgentNegotiationScreen() {
     }));
 
     if (result.accepted) {
+      sfxSuccess();
       setDealClosed(prev => ({ ...prev, [selectedAgentId]: true }));
       if (cargo) {
         setAgentCost(cargo.id, offer, agent.id, getAgentQuote(agent, cargo).days);
       }
+    } else if (result.newState.patience <= 0) {
+      sfxFail();   // el agente se hartó y se fue
     }
   };
 
@@ -94,6 +98,7 @@ export default function AgentNegotiationScreen() {
       ],
     }));
 
+    sfxSuccess();
     if (cargo) {
       setAgentCost(cargo.id, counterPrice, agent.id, getAgentQuote(agent, cargo).days);
     }

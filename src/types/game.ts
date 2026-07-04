@@ -127,6 +127,7 @@ export interface Cargo {
   quoteRound: number;
   daysInTransit: number;
   totalDays: number;
+  eventsHit: number;   // eventos ya sufridos en este viaje (tope 2: la mala suerte no funde sola)
 }
 
 export interface Quote {
@@ -178,6 +179,28 @@ export interface GameNews {
   riskDelta: number;
 }
 
+// Cobro pendiente: el cliente paga N días DESPUÉS de la entrega (plazo negociado).
+export interface PendingPayment {
+  cargoId: string;
+  clientName: string;
+  amount: number;
+  dueDay: number;
+}
+
+// Evento de tránsito esperando decisión del jugador (modal).
+export interface PendingEvent {
+  cargoId: string;
+  eventId: string;
+  route: string;
+}
+
+// Aviso que el store devuelve al UI para mostrar como toast.
+export interface Notice {
+  kind: 'good' | 'bad' | 'info';
+  title: string;
+  desc?: string;
+}
+
 export interface GameState {
   screen: GameScreen;
   day: number;
@@ -190,6 +213,8 @@ export interface GameState {
   availableClients: Client[];
   activeCargos: Cargo[];
   completedCargos: Cargo[];
+  pendingPayments: PendingPayment[];
+  pendingEvents: PendingEvent[];
   news: GameNews[];
   selectedCargoId: string | null;
   selectedAgentId: string | null;

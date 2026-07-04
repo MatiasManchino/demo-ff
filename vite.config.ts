@@ -8,7 +8,8 @@ export default defineConfig({
   base: './',
   plugins: [inspectAttr(), react()],
   server: {
-    port: 3000,
+    // Usa PORT si viene del entorno (preview/CI); 3000 por defecto para desarrollo local.
+    port: Number(process.env.PORT) || 3000,
   },
   resolve: {
     alias: {
