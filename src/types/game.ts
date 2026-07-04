@@ -116,6 +116,8 @@ export interface Cargo {
   quantity: string;
   mode: TransportMode;
   status: CargoStatus;
+  baseCost: number;   // costo base de mercado por RUTA (nunca se pisa) — ancla de precios de agentes y del cliente
+  distance: number;   // km de la ruta — de acá salen los días de tránsito por agente
   agentCost: number;
   finalPrice: number;
   margin: number;

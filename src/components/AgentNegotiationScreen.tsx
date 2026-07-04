@@ -7,7 +7,7 @@ import {
   CreditCard, CheckCircle2, XCircle
 } from 'lucide-react';
 import {
-  startAgentNegotiation, negotiateWithAgent,
+  startAgentNegotiation, negotiateWithAgent, getAgentQuote,
   getMoodEmoji, getPatienceColor,
   type AgentNegotiationState,
 } from '@/engine/negotiation';
@@ -33,16 +33,17 @@ export default function AgentNegotiationScreen() {
   const handleSelectAgent = (agentId: string) => {
     if (negotiationStates[agentId]) return; // Already negotiating
     const agent = agents.find(a => a.id === agentId);
-    if (!agent) return;
+    if (!agent || !cargo) return;
 
     setSelectedAgentId(agentId);
-    const state = startAgentNegotiation(agent);
+    const quote = getAgentQuote(agent, cargo);
+    const state = startAgentNegotiation(agent, quote.price);
     setNegotiationStates(prev => ({ ...prev, [agentId]: state }));
     setMessages(prev => ({
       ...prev,
       [agentId]: [getAgentGreeting(agentId)],
     }));
-    setOfferInput(Math.round(agent.basePrice * 0.9).toString());
+    setOfferInput(Math.round(quote.price * 0.9).toString());
   };
 
   const handleOffer = () => {
@@ -50,10 +51,12 @@ export default function AgentNegotiationScreen() {
     const agent = agents.find(a => a.id === selectedAgentId);
     if (!agent) return;
 
-    const offer = parseInt(offerInput);
+    const currentState = negotiationStates[selectedAgentId];
+    // Pagar de más no tiene sentido: la oferta se capea al precio publicado
+    // (antes se aceptaba literal cualquier número — costos de ₦53.000.000.000 incluidos).
+    const offer = Math.min(parseInt(offerInput), currentState.originalPrice);
     if (isNaN(offer) || offer <= 0) return;
 
-    const currentState = negotiationStates[selectedAgentId];
     const result = negotiateWithAgent(agent, currentState, offer);
 
     setNegotiationStates(prev => ({ ...prev, [selectedAgentId]: result.newState }));
@@ -68,7 +71,7 @@ export default function AgentNegotiationScreen() {
     if (result.accepted) {
       setDealClosed(prev => ({ ...prev, [selectedAgentId]: true }));
       if (cargo) {
-        setAgentCost(cargo.id, offer, agent.id, agent.transitTime);
+        setAgentCost(cargo.id, offer, agent.id, getAgentQuote(agent, cargo).days);
       }
     }
   };
@@ -92,7 +95,7 @@ export default function AgentNegotiationScreen() {
     }));
 
     if (cargo) {
-      setAgentCost(cargo.id, counterPrice, agent.id, agent.transitTime);
+      setAgentCost(cargo.id, counterPrice, agent.id, getAgentQuote(agent, cargo).days);
     }
   };
 
@@ -142,6 +145,7 @@ export default function AgentNegotiationScreen() {
             const isSelected = selectedAgentId === agent.id;
             const isClosed = dealClosed[agent.id];
             const agentMessages = messages[agent.id] || [];
+            const quote = getAgentQuote(agent, cargo);   // precio y días de ESTE agente para ESTA ruta
 
             return (
               <motion.div
@@ -170,7 +174,7 @@ export default function AgentNegotiationScreen() {
                         <div className="flex items-center gap-3 mt-2 text-xs">
                           <span className="flex items-center gap-1 text-slate-400">
                             <Clock className="w-3 h-3" />
-                            {agent.transitTime}d
+                            {quote.days}d
                           </span>
                           <span className="flex items-center gap-1 text-slate-400">
                             <Shield className="w-3 h-3" />
@@ -184,8 +188,8 @@ export default function AgentNegotiationScreen() {
                       </div>
                     </div>
                     <div className="text-right">
-                      <div className="font-bold text-slate-200">₦{agent.basePrice}</div>
-                      <div className="text-xs text-slate-500">base</div>
+                      <div className="font-bold text-slate-200">₦{quote.price}</div>
+                      <div className="text-xs text-slate-500">esta ruta</div>
                     </div>
                   </div>
 
@@ -245,13 +249,17 @@ export default function AgentNegotiationScreen() {
                           ))}
                         </div>
 
-                        {/* Price comparison */}
+                        {/* Price comparison — la flexibilidad es una pista vaga, no el piso exacto
+                            (antes "Mejor posible: ₦X" regalaba el resultado del regateo) */}
                         <div className="flex items-center justify-between mb-3 text-xs">
                           <div className="text-slate-500">
-                            Precio original: <span className="text-slate-300">₦{negState.originalPrice}</span>
+                            Precio publicado: <span className="text-slate-300">₦{negState.originalPrice}</span>
                           </div>
                           <div className="text-slate-500">
-                            Mejor posible: <span className="text-green-400">₦{negState.bestPossiblePrice}</span>
+                            Flexibilidad: <span className="text-green-400 tracking-widest">
+                              {'●'.repeat(Math.min(5, Math.max(1, Math.round(agent.negotiability / 0.05))))}
+                              {'○'.repeat(5 - Math.min(5, Math.max(1, Math.round(agent.negotiability / 0.05))))}
+                            </span>
                           </div>
                         </div>
 

@@ -1,5 +1,7 @@
 import { useGameStore } from '@/store/gameStore';
 import { GameScreen, CargoStatus } from '@/types/game';
+import { getRandomEvent } from '@/data/events';
+import { toast } from 'sonner';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   DollarSign, Star, TrendingUp, Package, Users,
@@ -180,12 +182,45 @@ export default function MainScreen() {
           <button
             onClick={() => {
               advanceDay();
+              const st = useGameStore.getState();
+
+              // Eventos de tránsito: chance diaria por carga, escalada por la confiabilidad
+              // del agente elegido — el barato (45%) sufre el doble de problemas que el premium (97%).
+              st.activeCargos
+                .filter(c => c.status === CargoStatus.InTransit)
+                .forEach(c => {
+                  const agent = st.agents.find(a => a.id === c.agentId);
+                  const reliability = agent ? agent.reliability : 75;
+                  const chance = 0.05 * (1.5 - reliability / 100);
+                  if (Math.random() >= chance) return;
+
+                  const ev = getRandomEvent();
+                  const cost = Math.round(ev.cost / 2);   // costos a escala demo
+                  const isBad = ev.reputationImpact < 0;
+                  if (cost) st.addCash(-cost);
+                  if (ev.reputationImpact) st.addFame(Math.round(ev.reputationImpact / 3));
+                  if (ev.extraDays) st.extendTransit(c.id, ev.extraDays);
+                  if (isBad) st.updateStats({ problems: st.stats.problems + 1 });
+
+                  const detail = [
+                    ev.description,
+                    cost ? `−₦${cost}` : '',
+                    ev.extraDays ? `${ev.extraDays > 0 ? '+' : ''}${ev.extraDays} días` : '',
+                  ].filter(Boolean).join(' · ');
+                  toast[isBad ? 'warning' : 'success'](`${ev.name} — ${c.origin} → ${c.destination}`, {
+                    description: detail,
+                  });
+                });
+
               // Process transit completions
               const completed = useGameStore.getState().activeCargos.filter(
                 c => c.status === CargoStatus.InTransit && c.daysInTransit >= c.totalDays
               );
               completed.forEach(c => {
                 useGameStore.getState().resolveTransit(c.id);
+                toast.success(`Entregado — ${c.origin} → ${c.destination}`, {
+                  description: `+₦${Math.round(c.finalPrice * 0.1)} de bono por entrega · +8 fama`,
+                });
               });
             }}
             className="flex-1 py-3 bg-slate-800 hover:bg-slate-700 rounded-xl font-medium text-sm transition-all hover:scale-[1.02] active:scale-[0.98] flex items-center justify-center gap-2"

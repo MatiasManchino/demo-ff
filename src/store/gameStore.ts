@@ -16,6 +16,7 @@ interface GameActions {
   resolveQuote: (cargoId: string, accepted: boolean, counterOffer: number | null) => void;
   advanceDay: () => void;
   resolveTransit: (cargoId: string) => void;
+  extendTransit: (cargoId: string, extraDays: number) => void;
   useTactic: (tactic: TacticType) => boolean;
   grantTactic: (tactic: TacticType) => void;
   addCash: (amount: number) => void;
@@ -122,6 +123,8 @@ export const useGameStore = create<GameState & GameActions>((set, get) => ({
       quantity,
       mode: route.mode,
       status: CargoStatus.Quoting,
+      baseCost: basePrice,           // costo de mercado de la RUTA (ancla de precios, nunca se pisa)
+      distance: route.baseDistance,  // km — de acá salen los días de tránsito por agente
       agentCost: 0,
       finalPrice: 0,
       margin: 0,
@@ -236,7 +239,7 @@ export const useGameStore = create<GameState & GameActions>((set, get) => ({
     let newXp = state.xp;
     if (state.xp >= state.level * 200) {
       newLevel = state.level + 1;
-      newXp = 0;
+      newXp = state.xp - state.level * 200;   // el XP sobrante se conserva (antes se perdía)
     }
 
     set({
@@ -267,6 +270,18 @@ export const useGameStore = create<GameState & GameActions>((set, get) => ({
         xp: state.xp + 30,
       };
     });
+  },
+
+  // Un evento de tránsito alarga (o acorta) el viaje. Nunca deja totalDays por debajo de lo
+  // ya navegado, así el próximo "Avanzar Día" puede completarlo.
+  extendTransit: (cargoId, extraDays) => {
+    set(state => ({
+      activeCargos: state.activeCargos.map(c =>
+        c.id === cargoId
+          ? { ...c, totalDays: Math.max(c.daysInTransit, c.totalDays + extraDays) }
+          : c
+      ),
+    }));
   },
 
   useTactic: (tactic) => {

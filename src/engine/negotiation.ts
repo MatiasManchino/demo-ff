@@ -1,5 +1,40 @@
-import type { Cargo, Client, Agent, NegotiationResult } from '@/types/game';
-import { TacticType, CLIENT_TYPE_CONFIG, TransportMode } from '@/types/game';
+import type { Cargo, Client, Agent, NegotiationResult, TransportMode, AgentPersonality } from '@/types/game';
+import { TacticType } from '@/types/game';
+
+const clamp01 = (x: number) => Math.max(0, Math.min(1, x));
+const lerp = (a: number, b: number, t: number) => a + (b - a) * clamp01(t);
+
+// ============ AGENT PRICING (por RUTA, no precio fijo) ============
+// El precio de cada agente sale del costo base de la ruta × su multiplicador de personalidad,
+// y el tiempo de tránsito de la distancia real × su velocidad. Antes eran números fijos:
+// OceanLink cobraba lo mismo por São Paulo→BA (1.700 km) que por Shanghái→BA (19.500 km).
+
+const PRICE_FACTOR: Record<AgentPersonality, number> = {
+  cheap: 0.80, aggressive: 0.90, flexible: 1.00, reliable: 1.06, premium: 1.15,
+};
+const SPEED_FACTOR: Record<AgentPersonality, number> = {
+  premium: 0.80, reliable: 0.90, flexible: 1.00, aggressive: 1.10, cheap: 1.25,
+};
+const KM_PER_DAY: Record<TransportMode, number> = {
+  maritime: 700, air: 2500, land: 450,
+};
+
+export function getAgentQuote(agent: Agent, cargo: Cargo): { price: number; days: number } {
+  const price = Math.round(cargo.baseCost * PRICE_FACTOR[agent.personality]);
+  const days = Math.max(2, Math.ceil((cargo.distance / KM_PER_DAY[cargo.mode]) * SPEED_FACTOR[agent.personality]));
+  return { price, days };
+}
+
+// Piso de mercado: lo más barato que ESTA carga se puede conseguir (el agente más económico).
+// Es la referencia contra la que el cliente juzga tu precio — NO tu costo real.
+export function marketFloor(cargo: Cargo): number {
+  return Math.round(cargo.baseCost * PRICE_FACTOR.cheap);
+}
+
+// Precio máximo que el cliente considera "justo" para esta carga.
+export function clientWillingness(cargo: Cargo, client: Client): number {
+  return Math.round(marketFloor(cargo) * (1 + Math.max(0.05, client.maxMarginTolerance)));
+}
 
 // ============ AGENT NEGOTIATION ============
 
@@ -12,13 +47,13 @@ export interface AgentNegotiationState {
   patience: number;
 }
 
-export function startAgentNegotiation(agent: Agent): AgentNegotiationState {
+export function startAgentNegotiation(agent: Agent, routePrice: number): AgentNegotiationState {
   return {
     round: 0,
-    currentPrice: agent.basePrice,
-    originalPrice: agent.basePrice,
+    currentPrice: routePrice,
+    originalPrice: routePrice,
     agentMood: 'calm',
-    bestPossiblePrice: Math.round(agent.basePrice * (1 - agent.negotiability)),
+    bestPossiblePrice: Math.round(routePrice * (1 - agent.negotiability)),
     patience: 100,
   };
 }
@@ -118,13 +153,17 @@ export function negotiateWithAgent(
   };
 }
 
-// ============ CLIENT NEGOTIATION (IMPROVED V2) ============
+// ============ CLIENT NEGOTIATION (V2 — por prioridades, portado del juego Unity) ============
+// El cliente ya NO juzga tu margen (no conoce tu costo): juzga tu PRECIO ABSOLUTO contra el
+// piso de mercado. Comprar barato al agente te deja precios que el cliente ama — esa es la
+// estrategia central del juego ("comprá barato, vendé caro").
 
 export interface ClientNegotiationPreview {
   acceptanceChance: number;
   expectedProfit: number;
   margin: number;
-  priceLabel: 'bajo' | 'competitivo' | 'estándar' | 'alto' | 'excesivo';
+  fairPrice: number;      // willingness: hasta acá el cliente lo considera razonable
+  priceLabel: 'ganga' | 'competitivo' | 'justo' | 'caro' | 'abusivo';
   color: string;
 }
 
@@ -137,27 +176,31 @@ export function previewClientAcceptance(
   playerLevel: number,
   playerFame: number,
   demandMultiplier: number,
+  negotiationRound = 0,
 ): ClientNegotiationPreview {
   const margin = (offeredPrice - cargo.agentCost) / offeredPrice;
   const profit = offeredPrice - cargo.agentCost;
+  const fairPrice = clientWillingness(cargo, client);
+  const ratio = offeredPrice / Math.max(1, fairPrice);
 
-  let priceLabel: ClientNegotiationPreview['priceLabel'] = 'estándar';
+  let priceLabel: ClientNegotiationPreview['priceLabel'] = 'justo';
   let color = '#fbbf24';
-  if (margin <= 0) { priceLabel = 'bajo'; color = '#ef4444'; }
-  else if (margin <= 0.10) { priceLabel = 'competitivo'; color = '#22c55e'; }
-  else if (margin <= 0.20) { priceLabel = 'estándar'; color = '#fbbf24'; }
-  else if (margin <= 0.30) { priceLabel = 'alto'; color = '#f97316'; }
-  else { priceLabel = 'excesivo'; color = '#ef4444'; }
+  if (ratio <= 0.80) { priceLabel = 'ganga'; color = '#22c55e'; }
+  else if (ratio <= 0.95) { priceLabel = 'competitivo'; color = '#4ade80'; }
+  else if (ratio <= 1.05) { priceLabel = 'justo'; color = '#fbbf24'; }
+  else if (ratio <= 1.25) { priceLabel = 'caro'; color = '#f97316'; }
+  else { priceLabel = 'abusivo'; color = '#ef4444'; }
 
   const chance = computeAcceptanceChance(
     cargo, client, offeredPrice, paymentTermDays,
-    tacticsUsed, playerLevel, playerFame, demandMultiplier,
+    tacticsUsed, playerLevel, playerFame, demandMultiplier, negotiationRound,
   );
 
   return {
     acceptanceChance: chance,
     expectedProfit: profit,
     margin,
+    fairPrice,
     priceLabel,
     color,
   };
@@ -172,66 +215,34 @@ function computeAcceptanceChance(
   playerLevel: number,
   playerFame: number,
   demandMultiplier: number,
+  negotiationRound = 0,
 ): number {
-  const margin = (offeredPrice - cargo.agentCost) / offeredPrice;
-  const config = CLIENT_TYPE_CONFIG[client.clientType];
+  const fairPrice = clientWillingness(cargo, client);
+  const ratio = offeredPrice / Math.max(1, fairPrice);
 
-  let base = 0.35;
+  // Tope duro: por encima del 125% del precio justo no hay negociación posible.
+  if (ratio > 1.25) return 0;
 
-  const typeModifiers: Record<string, number> = {
-    goodPayer: 0.08,
-    badPayer: -0.10,
-    urgentClient: 0.12,
-    creditClient: -0.04,
-    veryBadClient: -0.16,
-    contractClient: 0.05,
-  };
-  base += typeModifiers[client.clientType] || 0;
+  // Puntajes 0–1 por factor (1 = satisfacés del todo lo que el cliente valora)
+  const priceScore = clamp01((1.25 - ratio) / 0.55);   // 1.0 hasta ratio 0.70 · 0 en el tope abusivo
+  const trustScore = clamp01(client.relationshipLevel / 100);
+  const termScore  = 1 - clamp01(Math.abs(paymentTermDays - client.paymentTermPreference) / 60);
+  const fameScore  = clamp01((playerFame + 100) / 200);
 
-  if (client.relationshipLevel >= 80) base += 0.20;
-  else if (client.relationshipLevel >= 60) base += 0.10;
-  else if (client.relationshipLevel >= 40) base += 0;
-  else if (client.relationshipLevel >= 20) base -= 0.10;
-  else base -= 0.20;
+  // Promedio ponderado: el precio es lo que más pesa, pero no lo único.
+  const ws = 0.40 * priceScore + 0.20 * trustScore + 0.20 * termScore + 0.20 * fameScore;
 
-  const deliveries = client.relationshipLevel >= 80 ? 20 : client.relationshipLevel >= 60 ? 10 : client.relationshipLevel >= 40 ? 5 : 0;
-  if (deliveries >= 20) base += 0.15;
-  else if (deliveries >= 10) base += 0.10;
-  else if (deliveries >= 5) base += 0.05;
+  let acc = 0.10 + 0.72 * ws;
+  acc += Math.min(playerLevel - 1, 9) * 0.01;
+  for (const tactic of tacticsUsed) acc += getTacticBonus(tactic, client, demandMultiplier);
+  acc += (demandMultiplier - 1) * 0.20;                // demanda ADITIVA (multiplicar saturaba)
+  acc -= 0.10 * Math.max(0, negotiationRound);         // insistir cansa
 
-  base += ((playerFame + 50) / 100) * 0.10;
-  base += Math.min(playerLevel - 1, 9) * 0.01;
+  // Compuerta sobre el precio justo: entre willingness y el tope la aceptación se comprime.
+  // Sin esto, la relación/plazo/fama garantizaban cierres a cualquier precio.
+  if (ratio > 1) acc *= lerp(1, 0.35, (ratio - 1) / 0.25);
 
-  if (cargo.mode === TransportMode.Maritime) base += 0.05;
-
-  const preferredTerm = config.paymentDelay;
-  const termBonus = Math.min(paymentTermDays / 60, 0.10);
-  const termPenalty = Math.abs(paymentTermDays - preferredTerm) / 60 * 0.08;
-  base += termBonus - termPenalty;
-
-  for (const tactic of tacticsUsed) {
-    const bonus = getTacticBonus(tactic, client, demandMultiplier);
-    base += bonus;
-  }
-
-  const tolerance = config.maxMargin;
-  if (margin <= 0) {
-    base += 0.45;
-  } else if (margin <= tolerance) {
-    base += 0.45 * (1 - margin / tolerance);
-  } else if (margin <= tolerance + 0.15) {
-    base -= ((margin - tolerance) / 0.15) * 0.60;
-  } else {
-    base -= 0.60;
-  }
-
-  base *= demandMultiplier;
-
-  if (margin > tolerance + 0.15) {
-    base = -0.5;
-  }
-
-  return Math.max(0, Math.min(1, base));
+  return clamp01(acc);
 }
 
 function getTacticBonus(tactic: TacticType, client: Client, demandMultiplier: number): number {
@@ -265,10 +276,11 @@ export function evaluateClientQuote(
   demandMultiplier: number,
   negotiationRound: number,
 ): NegotiationResult {
-  const margin = (offeredPrice - cargo.agentCost) / offeredPrice;
-  const config = CLIENT_TYPE_CONFIG[client.clientType];
+  const fairPrice = clientWillingness(cargo, client);
+  const ratio = offeredPrice / Math.max(1, fairPrice);
 
-  if (margin > config.maxMargin + 0.15) {
+  // Tope duro: muy por encima de lo que el cliente paga por ESTA carga → se ofende.
+  if (ratio > 1.25) {
     return {
       accepted: false,
       counterOffer: null,
@@ -281,7 +293,7 @@ export function evaluateClientQuote(
 
   const chance = computeAcceptanceChance(
     cargo, client, offeredPrice, paymentTermDays,
-    tacticsUsed, playerLevel, playerFame, demandMultiplier,
+    tacticsUsed, playerLevel, playerFame, demandMultiplier, negotiationRound,
   );
 
   const roll = Math.random();
@@ -304,12 +316,9 @@ export function evaluateClientQuote(
   }
 
   if (client.acceptsNegotiation && negotiationRound < 2) {
-    const desiredMult = 1 + config.maxMargin * 0.8;
+    // El cliente propone bajar hacia SU precio justo (no conoce tu costo, no baja de ahí).
     const counterPrice = Math.round(
-      Math.min(
-        Math.max(cargo.agentCost * desiredMult * 1.1, cargo.agentCost),
-        cargo.agentCost / (1 - config.maxMargin),
-      ),
+      Math.max(marketFloor(cargo) * 0.95, Math.min(offeredPrice * 0.90, fairPrice * 0.98)),
     );
     return {
       accepted: false,
@@ -332,7 +341,7 @@ export function evaluateClientQuote(
     rejected: true,
     message: messages[Math.floor(Math.random() * messages.length)],
     acceptanceChance: chance,
-    makesAngry: margin > config.maxMargin + 0.05,
+    makesAngry: ratio > 1.15,
   };
 }
 

@@ -7,6 +7,7 @@ import AgentNegotiationScreen from '@/components/AgentNegotiationScreen';
 import ClientQuoteScreen from '@/components/ClientQuoteScreen';
 import GameOverScreen from '@/components/GameOverScreen';
 import VictoryScreen from '@/components/VictoryScreen';
+import { Toaster } from '@/components/ui/sonner';
 import './App.css';
 
 function App() {
@@ -21,6 +22,7 @@ function App() {
       {screen === GameScreen.ClientQuote && <ClientQuoteScreen />}
       {screen === GameScreen.GameOver && <GameOverScreen />}
       {screen === GameScreen.Victory && <VictoryScreen />}
+      <Toaster position="top-center" richColors theme="dark" />
     </div>
   );
 }

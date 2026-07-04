@@ -35,7 +35,7 @@ export default function ClientQuoteScreen() {
     if (!cargo || !client || !price || parseInt(price) <= 0) return null;
     return previewClientAcceptance(
       cargo, client, parseInt(price), paymentTerm,
-      activeTactics, level, fame, demandMultiplier,
+      activeTactics, level, fame, demandMultiplier, cargo.quoteRound,
     );
   }, [cargo, client, price, paymentTerm, activeTactics, level, fame, demandMultiplier]);
 
@@ -253,6 +253,10 @@ export default function ClientQuoteScreen() {
                       <span style={{ color: preview.color }} className="font-semibold">
                         {(preview.margin * 100).toFixed(1)}% ({preview.priceLabel})
                       </span>
+                    </div>
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="text-slate-500">Precio justo (mercado):</span>
+                      <span className="text-slate-400">~₦{preview.fairPrice}</span>
                     </div>
                     <div className="flex items-center justify-between text-sm">
                       <span className="text-slate-500">Profit estimado:</span>
